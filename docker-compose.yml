@@ -1,0 +1,116 @@
+version: "3"
+
+services:
+  zabo-server:
+    container_name: zabo-server
+    restart: always
+    image: ghcr.io/sparcs-kaist/zabo-server:latest
+    depends_on:
+      - zabo-mongo
+      - zabo-redis
+    networks:
+      - proxy
+      - backend
+    volumes:
+      - zabo-server-log:/app/log
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - MINIMUM_LOG_LEVEL=info
+      - SSO_CLIENT_ID=${SSO_CLIENT_ID}
+      - SSO_SECRET=${SSO_SECRET}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - JWT_SECRET=${JWT_SECRET}
+      - S3_BUCKET=${S3_BUCKET}
+      - MONGODB_URL=mongodb://zabo-mongo:27017/zabo
+      - REDIS_URL=redis://zabo-redis:6379
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+    labels:
+      - "com.centurylinklabs.watchtower.scope=zabo"
+      - 'com.centurylinklabs.watchtower.lifecycle.pre-update=curl -X POST -H ''Content-type: application/json'' --data ''{"text":"[PROD] 업데이트를 위해 zabo-server 서비스를 종료시켰습니다."}'' ${SLACK_WATCHTOWER_WEBHOOK}'
+      - 'com.centurylinklabs.watchtower.lifecycle.post-update=curl -X POST -H ''Content-type: application/json'' --data ''{"text":"[PROD] 업데이트 후 zabo-server 서비스를 재시작하였습니다."}'' ${SLACK_WATCHTOWER_WEBHOOK}'
+
+  zabo-mongo:
+    container_name: zabo-mongo
+    restart: always
+    image: mongo:4.4
+    networks:
+      - backend
+    volumes:
+      - zabo-mongo-data:/data/db
+
+  zabo-redis:
+    container_name: zabo-redis
+    restart: always
+    image: redis:7.0.4-alpine
+    networks:
+      - backend
+
+  zabo-scheduler:
+    container_name: zabo-scheduler
+    restart: always
+    build:
+      context: zabo-scheduler
+      dockerfile: Dockerfile
+    networks:
+      - backend
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_S3_DUMP_BUCKET_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_S3_DUMP_BUCKET_SECRET_ACCESS_KEY}
+      - BUCKET=${AWS_S3_DUMP_BUCKET_NAME}
+      - BACKUP_FOLDER=mongodb-dump/
+      - MONGODB_HOST=zabo-mongo:27017
+      - DB_STR=zabo
+    volumes:
+      - zabo-scheduler-log:/backup_log:rw
+
+  zabo-front:
+    container_name: zabo-front
+    restart: always
+    image: ghcr.io/sparcs-kaist/zabo-front:latest
+    networks:
+      - proxy
+    labels:
+      - "com.centurylinklabs.watchtower.scope=zabo"
+      - 'com.centurylinklabs.watchtower.lifecycle.pre-update=curl -X POST -H ''Content-type: application/json'' --data ''{"text":"[PROD] 업데이트를 위해 zabo-front 서비스를 종료시켰습니다."}'' ${SLACK_WATCHTOWER_WEBHOOK}'
+      - 'com.centurylinklabs.watchtower.lifecycle.post-update=curl -X POST -H ''Content-type: application/json'' --data ''{"text":"[PROD] 업데이트 후 zabo-front 서비스를 재시작하였습니다."}'' ${SLACK_WATCHTOWER_WEBHOOK}'
+
+  zabo-watchtower:
+    container_name: zabo-watchtower
+    image: containrrr/watchtower:latest
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 30 --scope zabo-boards --cleanup --enable-lifecycle-hooks
+    labels: [ "com.centurylinklabs.watchtower.scope=zabo" ]
+
+  zabo-nginx:
+    container_name: zabo-nginx
+    restart: always
+    build:
+      context: zabo-nginx
+      dockerfile: Dockerfile
+    ports:
+      - "${ZABO_PROXY_PORT:?err}:80"
+      - "${ZABO_BOARDS_PROXY_PORT:?err}:81"
+    networks:
+      - proxy
+    volumes:
+      - ./zabo-nginx/conf.d:/etc/nginx/conf.d:ro
+    depends_on:
+      - zabo-front
+      - zabo-server
+
+
+volumes:
+  zabo-server-log:
+    external: true
+  zabo-mongo-data:
+    external: true
+  zabo-scheduler-log:
+    external: true
+
+networks:
+  proxy:
+  backend:
